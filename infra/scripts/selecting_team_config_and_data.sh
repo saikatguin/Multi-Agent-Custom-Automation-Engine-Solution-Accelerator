@@ -1,5 +1,14 @@
 #!/bin/bash
 
+set -o pipefail
+
+last_command=""
+
+run_step() {
+    last_command="$*"
+    "$@"
+}
+
 # Parse command line arguments
 ResourceGroup=""
 while [[ $# -gt 0 ]]; do
@@ -112,6 +121,9 @@ cleanup_on_exit() {
     echo ""
     if [ $exit_code -ne 0 ]; then
         echo ""
+        if [[ -n "$last_command" ]]; then
+            echo "Last failed command: $last_command"
+        fi
         echo "Script failed with exit code: $exit_code"
     fi
     restore_network_access
@@ -188,14 +200,14 @@ function get_values_from_az_deployment() {
     directoryPath="data/agent_teams"
     
     echo "Fetching deployment name..."
-    deploymentName=$(az group show --name "$ResourceGroup" --query "tags.DeploymentName" -o tsv)
+    deploymentName=$(run_step az group show --name "$ResourceGroup" --query "tags.DeploymentName" -o tsv)
     if [[ -z "$deploymentName" ]]; then
         echo "Error: Could not find deployment name in resource group tags."
         return 1
     fi
     
     echo "Fetching deployment outputs for deployment: $deploymentName"
-    deploymentOutputs=$(az deployment group show --resource-group "$ResourceGroup" --name "$deploymentName" --query "properties.outputs" -o json)
+    deploymentOutputs=$(run_step az deployment group show --resource-group "$ResourceGroup" --name "$deploymentName" --query "properties.outputs" -o json)
     if [[ -z "$deploymentOutputs" ]]; then
         echo "Error: Could not fetch deployment outputs."
         return 1
@@ -236,7 +248,7 @@ function get_values_using_solution_suffix() {
     echo "Getting values from resource naming convention using solution suffix..."
     
     # Get the solution suffix from resource group tags
-    solutionSuffix=$(az group show --name "$ResourceGroup" --query "tags.SolutionSuffix" -o tsv)
+    solutionSuffix=$(run_step az group show --name "$ResourceGroup" --query "tags.SolutionSuffix" -o tsv)
     if [[ -z "$solutionSuffix" ]]; then
         echo "Error: Could not find SolutionSuffix tag in resource group."
         return 1
@@ -251,11 +263,11 @@ function get_values_using_solution_suffix() {
     
     # Query dynamic value (backend URL) from Container App
     echo "Querying backend URL from Container App..."
-    backendFqdn=$(az containerapp show \
+        backendFqdn=$(run_step az containerapp show \
       --name "$containerAppName" \
       --resource-group "$ResourceGroup" \
       --query "properties.configuration.ingress.fqdn" \
-      -o tsv 2>/dev/null)
+            -o tsv)
     
     if [[ -z "$backendFqdn" ]]; then
         echo "Error: Could not get Container App FQDN. Container App may not be deployed yet."
@@ -314,8 +326,8 @@ if test_azd_installed; then
 fi
 
 # Check if user has selected the correct subscription
-currentSubscriptionId=$(az account show --query id -o tsv)
-currentSubscriptionName=$(az account show --query name -o tsv)
+currentSubscriptionId=$(run_step az account show --query id -o tsv)
+currentSubscriptionName=$(run_step az account show --query name -o tsv)
 
 if [[ "$currentSubscriptionId" != "$azSubscriptionId" && -n "$azSubscriptionId" ]]; then
     echo "Current selected subscription is $currentSubscriptionName ( $currentSubscriptionId )."
@@ -456,16 +468,16 @@ done
 # WAF/Private Networking: If the Container App has IP restrictions or internal ingress,
 # the backendUrl is not reachable from the developer's machine. Route through the frontend
 # App Service proxy instead, which is public and forwards /api/* to the private backend over VNet.
-solutionSuffix=$(az group show --name "$ResourceGroup" --query "tags.SolutionSuffix" -o tsv 2>/dev/null)
+solutionSuffix=$(run_step az group show --name "$ResourceGroup" --query "tags.SolutionSuffix" -o tsv)
 if [[ -n "$solutionSuffix" ]]; then
     containerAppName="ca-${solutionSuffix}"
-    isExternal=$(az containerapp show --name "$containerAppName" --resource-group "$ResourceGroup" \
-        --query "properties.configuration.ingress.external" -o tsv 2>/dev/null)
-    hasIpRestrictions=$(az containerapp show --name "$containerAppName" --resource-group "$ResourceGroup" \
-        --query "length(properties.configuration.ingress.ipSecurityRestrictions || \`[]\`)" -o tsv 2>/dev/null)
+    isExternal=$(run_step az containerapp show --name "$containerAppName" --resource-group "$ResourceGroup" \
+        --query "properties.configuration.ingress.external" -o tsv)
+    hasIpRestrictions=$(run_step az containerapp show --name "$containerAppName" --resource-group "$ResourceGroup" \
+        --query "length(properties.configuration.ingress.ipSecurityRestrictions || \`[]\`)" -o tsv)
     hasIpRestrictions=${hasIpRestrictions:-0}
-    proxyEnabled=$(az webapp config appsettings list --name "app-${solutionSuffix}" --resource-group "$ResourceGroup" \
-        --query "[?name=='PROXY_API_REQUESTS'].value" -o tsv 2>/dev/null)
+    proxyEnabled=$(run_step az webapp config appsettings list --name "app-${solutionSuffix}" --resource-group "$ResourceGroup" \
+        --query "[?name=='PROXY_API_REQUESTS'].value" -o tsv)
     if [[ "$isExternal" == "false" ]] || [[ "$hasIpRestrictions" -gt 0 ]] || [[ "$proxyEnabled" == "true" ]]; then
         frontendHostname="app-${solutionSuffix}"
         frontendUrl="https://${frontendHostname}.azurewebsites.net"
@@ -489,7 +501,7 @@ echo "Subscription ID: $azSubscriptionId"
 echo "==============================================="
 echo ""
 
-userPrincipalId=$(az ad signed-in-user show --query id -o tsv)
+userPrincipalId=$(run_step az ad signed-in-user show --query id -o tsv)
 
 # Determine the correct Python command
 pythonCmd=""
@@ -587,7 +599,7 @@ if [[ "$useCaseSelection" == "1" || "$useCaseSelection" == "2" || "$useCaseSelec
             if [[ "$stPublicAccess" == "Disabled" ]]; then
                 stIsPublicAccessDisabled=true
                 echo "Enabling public access for Storage Account: $storageAccount"
-                az storage account update --name "$storageAccount" --public-network-access enabled --default-action Allow --output none
+                run_step az storage account update --name "$storageAccount" --public-network-access enabled --default-action Allow --output none
                 if [[ $? -ne 0 ]]; then
                     echo "Error: Failed to enable public access for storage account."
                     exit 1
@@ -602,7 +614,7 @@ if [[ "$useCaseSelection" == "1" || "$useCaseSelection" == "2" || "$useCaseSelec
                 maxRetries=5
                 retryCount=0
                 while [[ $retryCount -lt $maxRetries ]]; do
-                    currentAccess=$(az storage account show --name "$storageAccount" --resource-group "$ResourceGroup" --query "publicNetworkAccess" -o tsv)
+                    currentAccess=$(run_step az storage account show --name "$storageAccount" --resource-group "$ResourceGroup" --query "publicNetworkAccess" -o tsv)
                     if [[ "$currentAccess" == "Enabled" ]]; then
                         echo "✓ Storage Account public access enabled successfully"
                         break
@@ -626,7 +638,7 @@ if [[ "$useCaseSelection" == "1" || "$useCaseSelection" == "2" || "$useCaseSelec
             if [[ "$srchPublicAccess" == "Disabled" ]]; then
                 srchIsPublicAccessDisabled=true
                 echo "Enabling public access for AI Search Service: $aiSearch"
-                az search service update --name "$aiSearch" --resource-group "$ResourceGroup" --public-network-access enabled --output none
+                run_step az search service update --name "$aiSearch" --resource-group "$ResourceGroup" --public-network-access enabled --output none
                 if [[ $? -ne 0 ]]; then
                     echo "Error: Failed to enable public access for search service."
                     exit 1
@@ -641,7 +653,7 @@ if [[ "$useCaseSelection" == "1" || "$useCaseSelection" == "2" || "$useCaseSelec
                 maxRetries=5
                 retryCount=0
                 while [[ $retryCount -lt $maxRetries ]]; do
-                    currentAccess=$(az search service show --name "$aiSearch" --resource-group "$ResourceGroup" --query "publicNetworkAccess" -o tsv)
+                    currentAccess=$(run_step az search service show --name "$aiSearch" --resource-group "$ResourceGroup" --query "publicNetworkAccess" -o tsv)
                     if [[ "$currentAccess" == "Enabled" ]]; then
                         echo "✓ AI Search Service public access enabled successfully"
                         break
@@ -681,21 +693,21 @@ if [[ "$useCaseSelection" == "1" || "$useCaseSelection" == "all" || "$useCaseSel
     directoryPath="data/datasets/rfp/summary"
     # Upload sample files to blob storage
     echo "Uploading sample files to blob storage for RFP Evaluation..."
-    if ! az storage blob upload-batch --account-name "$storageAccount" --destination "$blobContainerForRFPSummary" --source "$directoryPath" --auth-mode login --pattern "*" --overwrite --output none; then
+    if ! run_step az storage blob upload-batch --account-name "$storageAccount" --destination "$blobContainerForRFPSummary" --source "$directoryPath" --auth-mode login --pattern "*" --overwrite --output none; then
         echo "Error: Failed to upload files to blob storage."
         isSampleDataFailed=true
         exit 1
     fi
 
     directoryPath="data/datasets/rfp/risk"
-    if ! az storage blob upload-batch --account-name "$storageAccount" --destination "$blobContainerForRFPRisk" --source "$directoryPath" --auth-mode login --pattern "*" --overwrite --output none; then
+    if ! run_step az storage blob upload-batch --account-name "$storageAccount" --destination "$blobContainerForRFPRisk" --source "$directoryPath" --auth-mode login --pattern "*" --overwrite --output none; then
         echo "Error: Failed to upload files to blob storage."
         isSampleDataFailed=true
         exit 1
     fi
 
     directoryPath="data/datasets/rfp/compliance"
-    if ! az storage blob upload-batch --account-name "$storageAccount" --destination "$blobContainerForRFPCompliance" --source "$directoryPath" --auth-mode login --pattern "*" --overwrite --output none; then
+    if ! run_step az storage blob upload-batch --account-name "$storageAccount" --destination "$blobContainerForRFPCompliance" --source "$directoryPath" --auth-mode login --pattern "*" --overwrite --output none; then
         echo "Error: Failed to upload files to blob storage."
         isSampleDataFailed=true
         exit 1
@@ -744,21 +756,21 @@ if [[ "$useCaseSelection" == "5" || "$useCaseSelection" == "all" || "$useCaseSel
     directoryPath="data/datasets/contract_compliance/summary"
     # Upload sample files to blob storage
     echo "Uploading sample files to blob storage for Contract Compliance Review..."
-    if ! az storage blob upload-batch --account-name "$storageAccount" --destination "$blobContainerForContractSummary" --source "$directoryPath" --auth-mode login --pattern "*" --overwrite --output none; then
+    if ! run_step az storage blob upload-batch --account-name "$storageAccount" --destination "$blobContainerForContractSummary" --source "$directoryPath" --auth-mode login --pattern "*" --overwrite --output none; then
         echo "Error: Failed to upload files to blob storage."
         isSampleDataFailed=true
         exit 1
     fi
 
     directoryPath="data/datasets/contract_compliance/risk"
-    if ! az storage blob upload-batch --account-name "$storageAccount" --destination "$blobContainerForContractRisk" --source "$directoryPath" --auth-mode login --pattern "*" --overwrite --output none; then
+    if ! run_step az storage blob upload-batch --account-name "$storageAccount" --destination "$blobContainerForContractRisk" --source "$directoryPath" --auth-mode login --pattern "*" --overwrite --output none; then
         echo "Error: Failed to upload files to blob storage."
         isSampleDataFailed=true
         exit 1
     fi
 
     directoryPath="data/datasets/contract_compliance/compliance"
-    if ! az storage blob upload-batch --account-name "$storageAccount" --destination "$blobContainerForContractCompliance" --source "$directoryPath" --auth-mode login --pattern "*" --overwrite --output none; then
+    if ! run_step az storage blob upload-batch --account-name "$storageAccount" --destination "$blobContainerForContractCompliance" --source "$directoryPath" --auth-mode login --pattern "*" --overwrite --output none; then
         echo "Error: Failed to upload files to blob storage."
         isSampleDataFailed=true
         exit 1
@@ -807,14 +819,14 @@ if [[ "$useCaseSelection" == "2" || "$useCaseSelection" == "all" || "$useCaseSel
     directoryPath="data/datasets/retail/customer"
     # Upload sample files to blob storage
     echo "Uploading sample files to blob storage for Retail Customer Satisfaction..."
-    if ! az storage blob upload-batch --account-name "$storageAccount" --destination "retail-dataset-customer" --source "$directoryPath" --auth-mode login --pattern "*" --overwrite --output none; then
+    if ! run_step az storage blob upload-batch --account-name "$storageAccount" --destination "retail-dataset-customer" --source "$directoryPath" --auth-mode login --pattern "*" --overwrite --output none; then
         echo "Error: Failed to upload files to blob storage."
         isSampleDataFailed=true
         exit 1
     fi
     
     directoryPath="data/datasets/retail/order"
-    if ! az storage blob upload-batch --account-name "$storageAccount" --destination "retail-dataset-order" --source "data/datasets/retail/order" --auth-mode login --pattern "*" --overwrite --output none; then
+    if ! run_step az storage blob upload-batch --account-name "$storageAccount" --destination "retail-dataset-order" --source "data/datasets/retail/order" --auth-mode login --pattern "*" --overwrite --output none; then
         echo "Error: Failed to upload files to blob storage."
         isSampleDataFailed=true
         exit 1
