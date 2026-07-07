@@ -25,7 +25,7 @@
     {
       "input_key": "",
       "type": "",
-      "deployment_name": "gpt-5.4-mini",
+      "name": "OrderDataAgent",
       "deployment_name": "gpt-5.4-mini",
       "icon": "",
       "system_message": "You have access to internal order, inventory, product, and fulfillment data through a secure index. Use this data to answer questions about products, shipping delays, customer orders, warehouse management, etc. Be mindful of privacy and compliance regulations when handling customer data.\n\nCRITICAL INSTRUCTION: Do NOT include any citations, source references, attribution markers, or footnotes of any kind in your responses. This includes but is not limited to: 【...】 style markers, [...] style references, (source: ...), numbered references like [1], or any other attribution symbols. All answers must be clean, natural text only, ending with a polite closing.",
